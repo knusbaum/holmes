@@ -32,14 +32,23 @@ type tmplStructField struct {
 	ValueFn func() template.HTML
 }
 
+// Inspector is an optional interface. If an object implements Inspector, it has
+// complete control over its rendering. It also has complete control over its subpaths.
+// It may choose to pass control to them when len(path) > 0, or do something else.
 type Inspector interface {
 	ObjectHTML(prefix string, path []string, w io.Writer, r *http.Request) error
 }
 
+// Summarizer is an optional interface. If an object implements Summarizer, it can control
+// how its object summary is rendered.
+// SummaryHTML should write a short HTML summary describing the object to w, usually with
+// a link to prefix, which is the path to the object.
 type Summarizer interface {
 	SummaryHTML(prefix string, w io.Writer, r *http.Request) error
 }
 
+// SummaryHTML returns a function that will write a summary of obj to w. This is useful
+// for writing object summaries with template functions.
 func SummaryHTML(obj interface{}, prefix string, r *http.Request) func(w io.Writer) error {
 	if i, ok := obj.(Summarizer); ok {
 		return func(w io.Writer) error {
@@ -53,6 +62,8 @@ func SummaryHTML(obj interface{}, prefix string, r *http.Request) func(w io.Writ
 	}
 }
 
+// ObjectHTMLFn returns a function that will call ObjectHTML on obj, prefix, path, and r.
+// This is useful in templates, as a template function.
 func ObjectHTMLFn(obj interface{}, prefix string, path []string, r *http.Request) func(w io.Writer) error {
 	return func(w io.Writer) error {
 		ObjectHTML(obj, prefix, path, w, r)
@@ -60,6 +71,18 @@ func ObjectHTMLFn(obj interface{}, prefix string, path []string, r *http.Request
 	}
 }
 
+// NextPathHTML Calls ObjectHTML on the field named by path[0] in obj. This is useful when implementing
+// the Inspector interface, for dispatching to sub-objects the same way holmes regularly does when
+// an object does not implement the Inspector interface.
+//
+// Usual use looks like this:
+//
+//	func (o *MyObject) ObjectHTML(prefix string, path []string, w io.Writer, r *http.Request) error {
+//		if len(path) > 0 {
+//			return holmes.NextPathHTML(o, prefix, path, w, r)
+//		}
+//		...
+//	}
 func NextPathHTML(obj interface{}, prefix string, path []string, w io.Writer, r *http.Request) error {
 	v := reflect.ValueOf(obj)
 	switch v.Kind() {
@@ -84,6 +107,8 @@ func NextPathHTML(obj interface{}, prefix string, path []string, w io.Writer, r 
 	return fmt.Errorf("Cannot handle subobject from type %v\n", v.Kind().String())
 }
 
+// ObjectHTML renders html for obj to w, at the path prefix. If the URL does not end at prefix, the
+// remainder of the path, split on '/', is specified in path.
 func ObjectHTML(obj interface{}, prefix string, path []string, w io.Writer, r *http.Request) error {
 	if i, ok := obj.(Inspector); ok {
 		fmt.Printf("OBJECT: %#v\n", obj)
@@ -164,38 +189,9 @@ func handleStruct(v reflect.Value, prefix string, path []string, w io.Writer, r 
 			}
 			return nil
 		}})
-
-	// var tmplVal struct {
-	// 	Name   string
-	// 	Fields []tmplStructField
-	// }
-
-	// t := v.Type()
-	// tmplVal.Name = t.Name()
-	// for i := 0; i < v.NumField(); i++ {
-	// 	field := t.Field(i)
-	// 	k := i
-	// 	tmplVal.Fields = append(tmplVal.Fields, tmplStructField{
-	// 		Name:    field.Name,
-	// 		Type:    field.Type.Name(),
-	// 		ValueFn: TemplateSummary(v.Field(k).Interface(), Subpath(prefix, field.Name), r),
-	// 	})
-	// }
-
-	// {
-	// 	t, err := template.New("foo").Parse(structTmpl)
-	// 	err = t.ExecuteTemplate(w, "foo", tmplVal)
-	// 	if err != nil {
-	// 		switch e := err.(type) {
-	// 		case tmpl.ExecError:
-	// 			log.Fatalf("ERR: %#v", e.Err)
-	// 		default:
-	// 			log.Fatalf("ERR: %#v", err)
-	// 		}
-	// 	}
-	// }
 }
 
+// Subpath joins a path prefix with a new part, separated by a forward-slash.
 func Subpath(prefix, part string) string {
 	if strings.HasSuffix(prefix, "/") {
 		prefix = prefix[:len(prefix)-1]
@@ -206,6 +202,12 @@ func Subpath(prefix, part string) string {
 	return fmt.Sprintf("%s/%s", prefix, part)
 }
 
+// Handler returns a new holmes handler which will render obj at the prefix.
+// prefix must match the path that the handler is registered at, and must end with a slash.
+//
+// Example:
+//
+//	http.HandleFunc("/my/path/to/my/object/", holmes.Handler("/my/path/to/my/object/", obj))
 func Handler(prefix string, obj interface{}) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
